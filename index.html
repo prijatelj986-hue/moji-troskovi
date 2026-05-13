@@ -176,19 +176,26 @@ async function sheetsLoad(){
     const r=await fetch(SCRIPT_URL+'?t='+Date.now(),{cache:'no-store'});
     if(!r.ok){setSyncBadge('err');return false;}
     const text=(await r.text()).trim();
-    if(!text||text==='{}'||text==='null'){
-      // Sheets is empty - first time, push local data up
-      setSyncBadge('saving');
-      await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',body:JSON.stringify(S)});
-      setTimeout(()=>setSyncBadge('ok'),600);
+    if(!text||text==='{}'||text==='null'||text===''){
+      // Sheets је празан — пошаљи локалне податке
+      await sheetsSave();
       return false;
     }
     const data=JSON.parse(text);
     if(data&&data.months){
-      // Merge: keep any months that are newer locally
+      const sheetsTime=data.lastModified||0;
+      const localTime=S?(S.lastModified||0):0;
+      // Ако су локални подаци новији — немој да их брише
+      if(sheetsTime<localTime&&localTime>0){
+        await sheetsSave();
+        return false;
+      }
+      // Merge: задржи локалне месеце којих нема у Sheets-у
       if(S&&S.months){
         Object.keys(S.months).forEach(k=>{if(!data.months[k])data.months[k]=S.months[k];});
         if(S.tpl&&!data.tpl)data.tpl=S.tpl;
+        if(!data.migratedMay2026)data.migratedMay2026=S.migratedMay2026;
+        if(!data.migratedJanApr2026)data.migratedJanApr2026=S.migratedJanApr2026;
       }
       S=data;
       localStorage.setItem(SKEY,JSON.stringify(S));
@@ -206,9 +213,17 @@ async function sheetsLoad(){
 async function sheetsSave(){
   if(!SCRIPT_URL)return;
   setSyncBadge('saving');
+  S.lastModified=Date.now();
+  svLocal();
   try{
+    // Покушај обичан POST прво
+    try{
+      const r=await fetch(SCRIPT_URL,{method:'POST',body:JSON.stringify(S)});
+      if(r.ok){setSyncBadge('ok');return;}
+    }catch(e1){}
+    // Резервни начин — no-cors POST
     await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',body:JSON.stringify(S)});
-    setTimeout(()=>setSyncBadge('ok'),800);
+    setTimeout(()=>setSyncBadge('ok'),1500);
   }catch(e){setSyncBadge('err');}
 }
 
@@ -642,7 +657,10 @@ function saveScriptUrl(){
 
 async function forceSync(){
   await sheetsSave();
-  await sheetsLoad();
+  // Сачекај да Sheets обради податке
+  await new Promise(r=>setTimeout(r,2500));
+  const loaded=await sheetsLoad();
+  if(loaded)migrate();
   showTab(currentTab);
 }
 
